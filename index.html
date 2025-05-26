@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Voice Assistant Console</title>
+    <link rel="stylesheet" href="voice-chat.css">
+</head>
+<body>
+    <div class="dev-console">
+        <div class="console-container">
+            <div class="console-header">
+                <span>Development Console</span>
+                <button id="clearConsole">Clear</button>
+            </div>
+            <div class="console" id="console"></div>
+        </div>
+        
+        <div class="control-bar">
+            <div class="status-group">
+                <div class="status-indicator" id="status">
+                    <div class="status-dot"></div>
+                    <span class="status-text">Ready</span>
+                </div>
+            </div>
+            
+            <div class="controls-group">
+                <div class="response-indicator" id="responseIndicator">
+                    <div class="wave"></div>
+                    <div class="wave"></div>
+                    <div class="wave"></div>
+                </div>
+                
+                <button class="voice-button" id="voiceButton">
+                    <div class="button-inner">
+                        <div class="mic-icon"></div>
+                        <div class="ripple-container"></div>
+                    </div>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let ws;
+        let mediaRecorder;
+        let audioChunks = [];
+        let isRecording = false;
+        let audioContext;
+        let audioQueue = [];
+        let isPlaying = false;
+        const SAMPLE_RATE = 44100; // Assuming 44.1kHz sample rate, adjust if different
+
+        const voiceButton = document.getElementById('voiceButton');
+        const statusElement = document.getElementById('status');
+        const responseIndicator = document.getElementById('responseIndicator');
+        const statusDot = document.querySelector('.status-dot');
+        const statusText = document.querySelector('.status-text');
+        const consoleElement = document.getElementById('console');
+        const clearConsoleButton = document.getElementById('clearConsole');
+
+        function appendToConsole(message, type = 'info') {
+            const entry = document.createElement('div');
+            entry.classList.add('console-entry', type);
+            
+            // Try to parse JSON if the message is a string
+            if (typeof message === 'string') {
+                try {
+                    const jsonObj = JSON.parse(message);
+                    message = JSON.stringify(jsonObj, null, 2);
+                } catch (e) {
+                    // If not JSON, use as is
+                }
+            }
+
+            entry.textContent = typeof message === 'object' ? 
+                JSON.stringify(message, null, 2) : message;
+            
+            consoleElement.appendChild(entry);
+            consoleElement.scrollTop = consoleElement.scrollHeight;
+        }
+
+        clearConsoleButton.addEventListener('click', () => {
+            consoleElement.innerHTML = '';
+        });
+
+        function connect() {
+            ws = new WebSocket('ws://localhost:8000/conversations/realtime');
+
+            ws.onopen = () => {
+                statusDot.classList.add('connected');
+                statusText.textContent = 'Ready';
+                appendToConsole('WebSocket connected', 'success');
+            };
+
+            ws.onclose = () => {
+                statusDot.classList.remove('connected');
+                statusText.textContent = 'Disconnected';
+                appendToConsole('WebSocket disconnected', 'error');
+                setTimeout(connect, 1000);
+            };
+
+            ws.onerror = () => {
+                statusDot.classList.remove('connected');
+                statusText.textContent = 'Error';
+                appendToConsole('WebSocket error', 'error');
+            };
+
+            ws.onmessage = async (event) => {
+                if (event.data instanceof Blob) {
+                    appendToConsole('Received audio chunk', 'info');
+                    // Convert blob to array buffer
+                    const arrayBuffer = await event.data.arrayBuffer();
+                    // Convert to Int16Array since we're receiving PCM 16-bit data
+                    const pcmData = new Int16Array(arrayBuffer);
+                    
+                    // Convert PCM 16-bit to Float32 for Web Audio API
+                    const floatData = new Float32Array(pcmData.length);
+                    for (let i = 0; i < pcmData.length; i++) {
+                        // Convert 16-bit integer to float32 (-1.0 to 1.0)
+                        floatData[i] = pcmData[i] / 32768.0;
+                    }
+                    
+                    audioQueue.push(floatData);
+                    
+                    // If not currently playing, start playing
+                    if (!isPlaying) {
+                        playNextChunk();
+                    }
+                } else {
+                    // Handle text message
+                    try {
+                        const data = event.data;
+                        appendToConsole(`Received: ${data}`, 'received');
+                        
+                        // Try to parse as JSON if it's a JSON string
+                        try {
+                            const jsonData = JSON.parse(data);
+                            appendToConsole('Parsed JSON:', 'info');
+                            appendToConsole(jsonData, 'received');
+                        } catch (e) {
+                            // If it's not JSON, we already logged the raw text
+                        }
+                    } catch (e) {
+                        appendToConsole(`Error processing message: ${e.message}`, 'error');
+                    }
+                }
+            };
+        }
+
+        async function playNextChunk() {
+            if (audioQueue.length === 0) {
+                isPlaying = false;
+                responseIndicator.classList.remove('active');
+                return;
+            }
+
+            isPlaying = true;
+            responseIndicator.classList.add('active');
+
+            if (!audioContext) {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)({
+                    sampleRate: SAMPLE_RATE
+                });
+            }
+
+            const floatData = audioQueue.shift();
+            
+            // Create an audio buffer
+            const audioBuffer = audioContext.createBuffer(1, floatData.length, audioContext.sampleRate);
+            const channelData = audioBuffer.getChannelData(0);
+            channelData.set(floatData);
+
+            // Create and configure source
+            const source = audioContext.createBufferSource();
+            source.buffer = audioBuffer;
+            source.connect(audioContext.destination);
+            
+            // Schedule the next chunk to play immediately after this one
+            source.onended = () => {
+                // Small timeout to prevent audio glitches between chunks
+                setTimeout(playNextChunk, 5);
+            };
+
+            try {
+                source.start(0);
+                appendToConsole('Playing audio chunk', 'info');
+            } catch (error) {
+                console.error('Error playing audio chunk:', error);
+                appendToConsole('Error playing audio chunk: ' + error.message, 'error');
+                playNextChunk(); // Skip problematic chunk
+            }
+        }
+
+        async function setupAudioRecording() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                
+                // Create an AudioContext for processing
+                if (!audioContext) {
+                    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                }
+                
+                // Create a MediaStreamSource from the stream
+                const source = audioContext.createMediaStreamSource(stream);
+                
+                // Create a ScriptProcessorNode for raw audio processing
+                const processor = audioContext.createScriptProcessor(4096, 1, 1);
+                
+                source.connect(processor);
+                processor.connect(audioContext.destination);
+                
+                let recordedChunks = [];
+                
+                processor.onaudioprocess = (e) => {
+                    if (isRecording) {
+                        // Get the raw audio data
+                        const inputData = e.inputBuffer.getChannelData(0);
+                        
+                        // Convert Float32Array to Int16Array (PCM 16-bit)
+                        const pcmData = new Int16Array(inputData.length);
+                        for (let i = 0; i < inputData.length; i++) {
+                            // Convert float to 16-bit signed integer
+                            const s = Math.max(-1, Math.min(1, inputData[i]));
+                            pcmData[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+                        }
+                        
+                        recordedChunks.push(pcmData.buffer);
+                    }
+                };
+
+                voiceButton.addEventListener('click', () => {
+                    if (!isRecording) {
+                        // Start recording
+                        recordedChunks = [];
+                        isRecording = true;
+                        voiceButton.classList.add('recording');
+                        statusText.textContent = 'Listening...';
+                        appendToConsole('Started recording', 'info');
+                    } else {
+                        // Stop recording
+                        isRecording = false;
+                        voiceButton.classList.remove('recording');
+                        statusText.textContent = 'Processing...';
+                        
+                        // Concatenate all chunks
+                        const audioData = new Int16Array(
+                            recordedChunks.reduce((acc, buffer) => acc + buffer.byteLength, 0)
+                        );
+                        
+                        let offset = 0;
+                        recordedChunks.forEach(buffer => {
+                            audioData.set(new Int16Array(buffer), offset);
+                            offset += buffer.byteLength / 2;
+                        });
+                        
+                        // Send the PCM data
+                        if (ws.readyState === WebSocket.OPEN) {
+                            ws.send(audioData.buffer);
+                            appendToConsole('Sent PCM audio data', 'sent');
+                        }
+                        
+                        recordedChunks = [];
+                        appendToConsole('Stopped recording', 'info');
+                    }
+                });
+
+                appendToConsole('Audio recording setup complete', 'success');
+            } catch (err) {
+                console.error('Error accessing microphone:', err);
+                statusText.textContent = 'Microphone Error';
+                appendToConsole('Microphone Error: ' + err.message, 'error');
+            }
+        }
+
+        // Initial setup
+        connect();
+        setupAudioRecording();
+    </script>
+</body>
+</html> 
