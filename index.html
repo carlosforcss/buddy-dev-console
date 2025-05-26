@@ -49,7 +49,10 @@
         let audioContext;
         let audioQueue = [];
         let isPlaying = false;
-        const SAMPLE_RATE = 44100; // Assuming 44.1kHz sample rate, adjust if different
+        let lastPlayTime = 0;
+        const ORIGINAL_SAMPLE_RATE = 44100; // Original sample rate from the server
+        const PLAYBACK_SAMPLE_RATE = 22050; // Lower sample rate for playback (makes it slower)
+        const PLAYBACK_RATE = 0.5; // Play at half speed
 
         const voiceButton = document.getElementById('voiceButton');
         const statusElement = document.getElementById('status');
@@ -121,7 +124,14 @@
                         floatData[i] = pcmData[i] / 32768.0;
                     }
                     
-                    audioQueue.push(floatData);
+                    // Resample the audio data to slow it down
+                    const resampledData = new Float32Array(Math.floor(floatData.length * (PLAYBACK_SAMPLE_RATE / ORIGINAL_SAMPLE_RATE)));
+                    for (let i = 0; i < resampledData.length; i++) {
+                        const originalIndex = Math.floor(i * (ORIGINAL_SAMPLE_RATE / PLAYBACK_SAMPLE_RATE));
+                        resampledData[i] = floatData[originalIndex];
+                    }
+                    
+                    audioQueue.push(resampledData);
                     
                     // If not currently playing, start playing
                     if (!isPlaying) {
@@ -160,35 +170,47 @@
 
             if (!audioContext) {
                 audioContext = new (window.AudioContext || window.webkitAudioContext)({
-                    sampleRate: SAMPLE_RATE
+                    sampleRate: PLAYBACK_SAMPLE_RATE
                 });
             }
 
             const floatData = audioQueue.shift();
+            const currentTime = audioContext.currentTime;
             
             // Create an audio buffer
-            const audioBuffer = audioContext.createBuffer(1, floatData.length, audioContext.sampleRate);
+            const audioBuffer = audioContext.createBuffer(1, floatData.length, PLAYBACK_SAMPLE_RATE);
             const channelData = audioBuffer.getChannelData(0);
             channelData.set(floatData);
 
             // Create and configure source
             const source = audioContext.createBufferSource();
             source.buffer = audioBuffer;
+            source.playbackRate.value = PLAYBACK_RATE; // Set playback rate
             source.connect(audioContext.destination);
             
-            // Schedule the next chunk to play immediately after this one
+            // Calculate when this chunk should start playing
+            const startTime = Math.max(currentTime, lastPlayTime);
+            lastPlayTime = startTime + (audioBuffer.duration / PLAYBACK_RATE);
+            
+            // Schedule the next chunk
             source.onended = () => {
-                // Small timeout to prevent audio glitches between chunks
-                setTimeout(playNextChunk, 5);
+                if (audioQueue.length > 0) {
+                    playNextChunk();
+                } else {
+                    isPlaying = false;
+                    responseIndicator.classList.remove('active');
+                }
             };
 
             try {
-                source.start(0);
+                source.start(startTime);
                 appendToConsole('Playing audio chunk', 'info');
             } catch (error) {
                 console.error('Error playing audio chunk:', error);
                 appendToConsole('Error playing audio chunk: ' + error.message, 'error');
-                playNextChunk(); // Skip problematic chunk
+                // If there's an error, try the next chunk
+                lastPlayTime = currentTime;
+                playNextChunk();
             }
         }
 
