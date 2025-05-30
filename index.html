@@ -5,37 +5,69 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Voice Assistant Console</title>
     <link rel="stylesheet" href="voice-chat.css">
+    <style>
+        .description-box {
+            background-color: #f5f5f5;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 15px;
+            margin: 10px 0;
+            min-height: 60px;
+            font-size: 14px;
+            line-height: 1.4;
+            color: #333;
+        }
+    </style>
 </head>
 <body>
-    <div class="dev-console">
-        <div class="console-container">
-            <div class="console-header">
-                <span>Development Console</span>
-                <button id="clearConsole">Clear</button>
-            </div>
-            <div class="console" id="console"></div>
-        </div>
-        
-        <div class="control-bar">
-            <div class="status-group">
-                <div class="status-indicator" id="status">
-                    <div class="status-dot"></div>
-                    <span class="status-text">Ready</span>
+    <div class="main-container">
+        <div class="dev-console">
+            <div class="console-container">
+                <div class="console-header">
+                    <span>Development Console</span>
+                    <button id="clearConsole">Clear</button>
                 </div>
+                <div class="console" id="console"></div>
             </div>
             
-            <div class="controls-group">
-                <div class="response-indicator" id="responseIndicator">
-                    <div class="wave"></div>
-                    <div class="wave"></div>
-                    <div class="wave"></div>
+            <div class="control-bar">
+                <div class="status-group">
+                    <div class="status-indicator" id="status">
+                        <div class="status-dot"></div>
+                        <span class="status-text">Ready</span>
+                    </div>
                 </div>
                 
-                <button class="voice-button" id="voiceButton">
-                    <div class="button-inner">
-                        <div class="mic-icon"></div>
-                        <div class="ripple-container"></div>
+                <div class="controls-group">
+                    <div class="response-indicator" id="responseIndicator">
+                        <div class="wave"></div>
+                        <div class="wave"></div>
+                        <div class="wave"></div>
                     </div>
+                    
+                    <button class="voice-button" id="voiceButton">
+                        <div class="button-inner">
+                            <div class="mic-icon"></div>
+                            <div class="ripple-container"></div>
+                        </div>
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <div class="camera-section">
+            <div class="camera-preview">
+                <video id="cameraFeed" autoplay playsinline></video>
+            </div>
+            <div class="description-box" id="descriptionBox">
+                Generating random description...
+            </div>
+            <div class="camera-controls">
+                <select id="cameraSelect" class="camera-select">
+                    <option value="">Select camera...</option>
+                </select>
+                <button id="captureButton" class="capture-button">
+                    Capture
                 </button>
             </div>
         </div>
@@ -61,6 +93,12 @@
         const statusText = document.querySelector('.status-text');
         const consoleElement = document.getElementById('console');
         const clearConsoleButton = document.getElementById('clearConsole');
+
+        // Add new camera functionality
+        const cameraFeed = document.getElementById('cameraFeed');
+        const cameraSelect = document.getElementById('cameraSelect');
+        const captureButton = document.getElementById('captureButton');
+        let currentStream = null;
 
         function appendToConsole(message, type = 'info') {
             const entry = document.createElement('div');
@@ -294,6 +332,114 @@
                 appendToConsole('Microphone Error: ' + err.message, 'error');
             }
         }
+
+        // Function to switch camera
+        async function switchCamera(deviceId = null) {
+            if (currentStream) {
+                currentStream.getTracks().forEach(track => track.stop());
+            }
+
+            try {
+                const constraints = {
+                    video: deviceId ? 
+                        { deviceId: { exact: deviceId } } : 
+                        true
+                };
+
+                appendToConsole('Requesting camera with constraints: ' + JSON.stringify(constraints), 'info');
+                
+                const stream = await navigator.mediaDevices.getUserMedia(constraints);
+                currentStream = stream;
+                cameraFeed.srcObject = stream;
+                
+                // Ensure video is playing
+                try {
+                    await cameraFeed.play();
+                    appendToConsole('Camera feed started successfully', 'success');
+                } catch (playError) {
+                    appendToConsole('Error playing video: ' + playError.message, 'error');
+                }
+
+                // Log active track settings
+                const videoTrack = stream.getVideoTracks()[0];
+                appendToConsole('Active video track settings: ' + JSON.stringify(videoTrack.getSettings()), 'info');
+                
+            } catch (error) {
+                appendToConsole('Error accessing camera: ' + error.message, 'error');
+            }
+        }
+
+        // Populate camera select with available devices
+        async function setupCameras() {
+            try {
+                // First start with default camera
+                await switchCamera();
+                appendToConsole('Default camera initialized', 'success');
+
+                // Then enumerate devices
+                const devices = await navigator.mediaDevices.enumerateDevices();
+                const videoDevices = devices.filter(device => device.kind === 'videoinput');
+                
+                appendToConsole('Found ' + videoDevices.length + ' video devices', 'info');
+                
+                cameraSelect.innerHTML = '';
+                videoDevices.forEach((device, index) => {
+                    const option = document.createElement('option');
+                    option.value = device.deviceId;
+                    option.text = device.label || `Camera ${index + 1}`;
+                    cameraSelect.appendChild(option);
+                    appendToConsole('Added camera option: ' + option.text, 'info');
+                });
+
+                // Select the current camera in the dropdown
+                if (currentStream) {
+                    const currentTrack = currentStream.getVideoTracks()[0];
+                    if (currentTrack) {
+                        const currentDevice = videoDevices.find(device => device.deviceId === currentTrack.getSettings().deviceId);
+                        if (currentDevice) {
+                            cameraSelect.value = currentDevice.deviceId;
+                        }
+                    }
+                }
+
+            } catch (error) {
+                appendToConsole('Error setting up cameras: ' + error.message, 'error');
+            }
+        }
+
+        // Handle camera selection
+        cameraSelect.addEventListener('change', () => {
+            if (cameraSelect.value) {
+                appendToConsole('Switching to camera: ' + cameraSelect.selectedOptions[0].text, 'info');
+                switchCamera(cameraSelect.value);
+            }
+        });
+
+        // Handle capture button
+        captureButton.addEventListener('click', () => {
+            appendToConsole('Photo capture clicked (dummy functionality)', 'info');
+        });
+
+        // Initialize camera system
+        async function initializeCamera() {
+            try {
+                // Check if getUserMedia is supported
+                if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                    throw new Error('Camera API not supported in this browser');
+                }
+
+                appendToConsole('Initializing camera system...', 'info');
+                await setupCameras();
+
+            } catch (error) {
+                appendToConsole('Camera initialization error: ' + error.message, 'error');
+            }
+        }
+
+        // Start camera initialization
+        initializeCamera().catch(error => {
+            appendToConsole('Fatal camera error: ' + error.message, 'error');
+        });
 
         // Initial setup
         connect();
