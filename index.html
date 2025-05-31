@@ -86,7 +86,7 @@
                 <video id="cameraFeed" autoplay playsinline></video>
             </div>
             <div class="description-box" id="descriptionBox">
-                Generating random description...
+                Heres gonna be the text description of the image
             </div>
             <div class="camera-controls">
                 <select id="cameraSelect" class="camera-select">
@@ -466,6 +466,10 @@
                 
                 appendToConsole('Sending image to server...', 'info');
                 
+                // Update description box with loading message
+                const descriptionBox = document.getElementById('descriptionBox');
+                descriptionBox.textContent = 'Waiting for message description...';
+                
                 // Send the image to the server
                 const response = await fetch('http://localhost:8000/conversations/image/', {
                     method: 'POST',
@@ -481,11 +485,13 @@
                 appendToConsole(data, 'received');
                 
                 // Update the description box with the transcription
-                const descriptionBox = document.getElementById('descriptionBox');
                 descriptionBox.textContent = data.transcription;
                 
             } catch (error) {
                 appendToConsole('Error capturing/sending image: ' + error.message, 'error');
+                // Update description box with error message
+                const descriptionBox = document.getElementById('descriptionBox');
+                descriptionBox.textContent = 'Error: Failed to get image description';
             }
         });
 
