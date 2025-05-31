@@ -56,7 +56,7 @@
                 <div class="console" id="console"></div>
             </div>
             
-            <div class="control-bar">
+            <div class="console-footer">
                 <div class="status-group">
                     <div class="status-indicator" id="status">
                         <div class="status-dot"></div>
@@ -74,6 +74,15 @@
                     <button class="voice-button" id="voiceButton">
                         <div class="mic-icon"></div>
                     </button>
+
+                    <div class="camera-controls">
+                        <select id="cameraSelect" class="camera-select">
+                            <option value="">Select camera...</option>
+                        </select>
+                        <button id="captureButton" class="capture-button">
+                            Capture
+                        </button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -84,14 +93,6 @@
             </div>
             <div class="description-box" id="descriptionBox">
                 Heres gonna be the text description of the image
-            </div>
-            <div class="camera-controls">
-                <select id="cameraSelect" class="camera-select">
-                    <option value="">Select camera...</option>
-                </select>
-                <button id="captureButton" class="capture-button">
-                    Capture
-                </button>
             </div>
         </div>
     </div>

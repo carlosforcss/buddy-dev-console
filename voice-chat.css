@@ -77,7 +77,7 @@ body {
 .console-entry.received { color: #a1b56c; }
 
 /* Control bar styles */
-.control-bar {
+.console-footer {
     height: 80px;
     padding: 0 20px;
     display: flex;
@@ -86,6 +86,46 @@ body {
     background-color: #2d2d2d;
     border-top: 1px solid #333;
     width: 100%;
+    position: fixed;
+    bottom: 0;
+    left: 0;
+}
+
+.controls-group {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+}
+
+/* Camera controls styles */
+.camera-controls {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+}
+
+.camera-select {
+    min-width: 200px;
+    padding: 8px;
+    border-radius: 4px;
+    background-color: #1e1e1e;
+    border: 1px solid #333;
+    color: white;
+}
+
+.capture-button {
+    padding: 8px 16px;
+    background-color: #7cafc2;
+    border: none;
+    border-radius: 4px;
+    color: white;
+    cursor: pointer;
+    transition: background-color 0.3s;
+    white-space: nowrap;
+}
+
+.capture-button:hover {
+    background-color: #6b9eb1;
 }
 
 /* Status indicator styles */
@@ -182,35 +222,6 @@ body {
     left: 50%;
     transform: translate(-50%, -50%);
     background: #1a1a1a;
-}
-
-.camera-controls {
-    display: flex;
-    gap: 10px;
-    padding: 10px 0;
-}
-
-.camera-select {
-    flex: 1;
-    padding: 8px;
-    border-radius: 4px;
-    background-color: #2d2d2d;
-    border: 1px solid #333;
-    color: white;
-}
-
-.capture-button {
-    padding: 8px 16px;
-    background-color: #7cafc2;
-    border: none;
-    border-radius: 4px;
-    color: white;
-    cursor: pointer;
-    transition: background-color 0.3s;
-}
-
-.capture-button:hover {
-    background-color: #6b9eb1;
 }
 
 .image-description {
