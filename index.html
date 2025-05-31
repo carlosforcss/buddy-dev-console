@@ -416,8 +416,51 @@
         });
 
         // Handle capture button
-        captureButton.addEventListener('click', () => {
-            appendToConsole('Photo capture clicked (dummy functionality)', 'info');
+        captureButton.addEventListener('click', async () => {
+            try {
+                // Create a canvas element to capture the image
+                const canvas = document.createElement('canvas');
+                const context = canvas.getContext('2d');
+                
+                // Set canvas size to match video dimensions
+                canvas.width = cameraFeed.videoWidth;
+                canvas.height = cameraFeed.videoHeight;
+                
+                // Draw the current video frame to the canvas
+                context.drawImage(cameraFeed, 0, 0, canvas.width, canvas.height);
+                
+                // Convert the canvas to a blob
+                const blob = await new Promise(resolve => {
+                    canvas.toBlob(resolve, 'image/jpeg', 0.95);
+                });
+                
+                // Create form data and append the image
+                const formData = new FormData();
+                formData.append('image', blob, 'capture.jpg');
+                
+                appendToConsole('Sending image to server...', 'info');
+                
+                // Send the image to the server
+                const response = await fetch('http://localhost:8000/conversations/image/', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                
+                const data = await response.json();
+                appendToConsole('Server response:', 'received');
+                appendToConsole(data, 'received');
+                
+                // Update the description box with the transcription
+                const descriptionBox = document.getElementById('descriptionBox');
+                descriptionBox.textContent = data.transcription;
+                
+            } catch (error) {
+                appendToConsole('Error capturing/sending image: ' + error.message, 'error');
+            }
         });
 
         // Initialize camera system
