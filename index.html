@@ -339,82 +339,6 @@
             }
         }
 
-        async function setupAudioRecording() {
-            try {
-                // Request initial microphone permission
-                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                currentAudioStream = stream;
-                
-                // After getting permission, enumerate devices to get their labels
-                await setupAudioDevices();
-                
-                if (!audioContext) {
-                    audioContext = new (window.AudioContext || window.webkitAudioContext)();
-                }
-                
-                // Create a MediaStreamSource from the stream
-                const source = audioContext.createMediaStreamSource(stream);
-                
-                // Create a ScriptProcessorNode for raw audio processing
-                const processor = audioContext.createScriptProcessor(4096, 1, 1);
-                
-                source.connect(processor);
-                processor.connect(audioContext.destination);
-                
-                let recordedChunks = [];
-                
-                processor.onaudioprocess = (e) => {
-                    if (isRecording) {
-                        const inputData = e.inputBuffer.getChannelData(0);
-                        const pcmData = new Int16Array(inputData.length);
-                        for (let i = 0; i < inputData.length; i++) {
-                            const s = Math.max(-1, Math.min(1, inputData[i]));
-                            pcmData[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-                        }
-                        recordedChunks.push(pcmData.buffer);
-                    }
-                };
-
-                voiceButton.addEventListener('click', () => {
-                    if (!isRecording) {
-                        recordedChunks = [];
-                        isRecording = true;
-                        voiceButton.classList.add('recording');
-                        statusText.textContent = 'Listening...';
-                        appendToConsole('Started recording', 'info');
-                    } else {
-                        isRecording = false;
-                        voiceButton.classList.remove('recording');
-                        statusText.textContent = 'Processing...';
-                        
-                        const audioData = new Int16Array(
-                            recordedChunks.reduce((acc, buffer) => acc + buffer.byteLength, 0)
-                        );
-                        
-                        let offset = 0;
-                        recordedChunks.forEach(buffer => {
-                            audioData.set(new Int16Array(buffer), offset);
-                            offset += buffer.byteLength / 2;
-                        });
-                        
-                        if (ws.readyState === WebSocket.OPEN) {
-                            ws.send(audioData.buffer);
-                            appendToConsole('Sent PCM audio data', 'sent');
-                        }
-                        
-                        recordedChunks = [];
-                        appendToConsole('Stopped recording', 'info');
-                    }
-                });
-
-                appendToConsole('Audio recording setup complete', 'success');
-            } catch (err) {
-                console.error('Error accessing microphone:', err);
-                statusText.textContent = 'Microphone Error';
-                appendToConsole('Microphone Error: ' + err.message, 'error');
-            }
-        }
-
         // Function to switch camera
         async function switchCamera(deviceId = null) {
             if (currentStream) {
@@ -550,6 +474,89 @@
                 descriptionBox.textContent = 'Error: Failed to get image description';
             }
         });
+
+
+        async function setupAudioRecording() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                
+                // Create an AudioContext for processing
+                if (!audioContext) {
+                    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                }
+                
+                // Create a MediaStreamSource from the stream
+                const source = audioContext.createMediaStreamSource(stream);
+                
+                // Create a ScriptProcessorNode for raw audio processing
+                const processor = audioContext.createScriptProcessor(4096, 1, 1);
+                
+                source.connect(processor);
+                processor.connect(audioContext.destination);
+                
+                let recordedChunks = [];
+                
+                processor.onaudioprocess = (e) => {
+                    if (isRecording) {
+                        // Get the raw audio data
+                        const inputData = e.inputBuffer.getChannelData(0);
+                        
+                        // Convert Float32Array to Int16Array (PCM 16-bit)
+                        const pcmData = new Int16Array(inputData.length);
+                        for (let i = 0; i < inputData.length; i++) {
+                            // Convert float to 16-bit signed integer
+                            const s = Math.max(-1, Math.min(1, inputData[i]));
+                            pcmData[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+                        }
+                        
+                        recordedChunks.push(pcmData.buffer);
+                    }
+                };
+
+                voiceButton.addEventListener('click', () => {
+                    if (!isRecording) {
+                        // Start recording
+                        recordedChunks = [];
+                        isRecording = true;
+                        voiceButton.classList.add('recording');
+                        statusText.textContent = 'Listening...';
+                        appendToConsole('Started recording', 'info');
+                    } else {
+                        // Stop recording
+                        isRecording = false;
+                        voiceButton.classList.remove('recording');
+                        statusText.textContent = 'Processing...';
+                        
+                        // Concatenate all chunks
+                        const audioData = new Int16Array(
+                            recordedChunks.reduce((acc, buffer) => acc + buffer.byteLength, 0)
+                        );
+                        
+                        let offset = 0;
+                        recordedChunks.forEach(buffer => {
+                            audioData.set(new Int16Array(buffer), offset);
+                            offset += buffer.byteLength / 2;
+                        });
+                        
+                        // Send the PCM data
+                        if (ws.readyState === WebSocket.OPEN) {
+                            ws.send(audioData.buffer);
+                            appendToConsole('Sent PCM audio data', 'sent');
+                        }
+                        
+                        recordedChunks = [];
+                        appendToConsole('Stopped recording', 'info');
+                    }
+                });
+
+                appendToConsole('Audio recording setup complete', 'success');
+            } catch (err) {
+                console.error('Error accessing microphone:', err);
+                statusText.textContent = 'Microphone Error';
+                appendToConsole('Microphone Error: ' + err.message, 'error');
+            }
+        }
+
 
         // Initialize camera system
         async function initializeCamera() {
