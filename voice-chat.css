@@ -104,13 +104,19 @@ body {
     align-items: center;
 }
 
-.camera-select {
-    min-width: 200px;
+.device-select {
+    min-width: 180px;
     padding: 8px;
     border-radius: 4px;
     background-color: #1e1e1e;
     border: 1px solid #333;
     color: white;
+    font-size: 14px;
+}
+
+.device-select:focus {
+    outline: none;
+    border-color: #7cafc2;
 }
 
 .capture-button {

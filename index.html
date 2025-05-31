@@ -76,7 +76,10 @@
                     </button>
 
                     <div class="camera-controls">
-                        <select id="cameraSelect" class="camera-select">
+                        <select id="micSelect" class="device-select">
+                            <option value="">Select microphone...</option>
+                        </select>
+                        <select id="cameraSelect" class="device-select">
                             <option value="">Select camera...</option>
                         </select>
                         <button id="captureButton" class="capture-button">
@@ -106,9 +109,10 @@
         let audioQueue = [];
         let isPlaying = false;
         let lastPlayTime = 0;
-        const ORIGINAL_SAMPLE_RATE = 44100; // Original sample rate from the server
-        const PLAYBACK_SAMPLE_RATE = 22050; // Lower sample rate for playback (makes it slower)
-        const PLAYBACK_RATE = 0.5; // Play at half speed
+        let currentAudioStream = null;
+        const ORIGINAL_SAMPLE_RATE = 44100;
+        const PLAYBACK_SAMPLE_RATE = 22050;
+        const PLAYBACK_RATE = 0.5;
 
         const voiceButton = document.getElementById('voiceButton');
         const statusElement = document.getElementById('status');
@@ -117,6 +121,7 @@
         const statusText = document.querySelector('.status-text');
         const consoleElement = document.getElementById('console');
         const clearConsoleButton = document.getElementById('clearConsole');
+        const micSelect = document.getElementById('micSelect');
 
         // Add new camera functionality
         const cameraFeed = document.getElementById('cameraFeed');
@@ -276,11 +281,73 @@
             }
         }
 
+        // Add event listener for microphone selection
+        micSelect.addEventListener('change', async () => {
+            if (currentAudioStream) {
+                currentAudioStream.getTracks().forEach(track => track.stop());
+            }
+            if (micSelect.value) {
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({
+                        audio: { deviceId: { exact: micSelect.value } }
+                    });
+                    currentAudioStream = stream;
+                    appendToConsole('Switched to microphone: ' + micSelect.selectedOptions[0].text, 'info');
+                } catch (error) {
+                    appendToConsole('Error switching microphone: ' + error.message, 'error');
+                }
+            }
+        });
+
+        // Function to enumerate audio devices
+        async function setupAudioDevices() {
+            try {
+                const devices = await navigator.mediaDevices.enumerateDevices();
+                const audioDevices = devices.filter(device => device.kind === 'audioinput');
+                
+                micSelect.innerHTML = '';
+                let defaultDevice = null;
+
+                audioDevices.forEach((device, index) => {
+                    const option = document.createElement('option');
+                    option.value = device.deviceId;
+                    option.text = device.label || `Microphone ${index + 1}`;
+                    micSelect.appendChild(option);
+                    
+                    // Check if this is the default device
+                    if (device.deviceId === 'default') {
+                        defaultDevice = device;
+                    }
+                });
+
+                // If we found a default device, select it
+                if (defaultDevice) {
+                    micSelect.value = defaultDevice.deviceId;
+                    // Trigger the change event to set up the stream
+                    const event = new Event('change');
+                    micSelect.dispatchEvent(event);
+                } else if (audioDevices.length > 0) {
+                    // If no default device, select the first one
+                    micSelect.value = audioDevices[0].deviceId;
+                    const event = new Event('change');
+                    micSelect.dispatchEvent(event);
+                }
+
+                appendToConsole('Found ' + audioDevices.length + ' audio input devices', 'info');
+            } catch (error) {
+                appendToConsole('Error enumerating audio devices: ' + error.message, 'error');
+            }
+        }
+
         async function setupAudioRecording() {
             try {
+                // Request initial microphone permission
                 const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                currentAudioStream = stream;
                 
-                // Create an AudioContext for processing
+                // After getting permission, enumerate devices to get their labels
+                await setupAudioDevices();
+                
                 if (!audioContext) {
                     audioContext = new (window.AudioContext || window.webkitAudioContext)();
                 }
@@ -298,36 +365,28 @@
                 
                 processor.onaudioprocess = (e) => {
                     if (isRecording) {
-                        // Get the raw audio data
                         const inputData = e.inputBuffer.getChannelData(0);
-                        
-                        // Convert Float32Array to Int16Array (PCM 16-bit)
                         const pcmData = new Int16Array(inputData.length);
                         for (let i = 0; i < inputData.length; i++) {
-                            // Convert float to 16-bit signed integer
                             const s = Math.max(-1, Math.min(1, inputData[i]));
                             pcmData[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
                         }
-                        
                         recordedChunks.push(pcmData.buffer);
                     }
                 };
 
                 voiceButton.addEventListener('click', () => {
                     if (!isRecording) {
-                        // Start recording
                         recordedChunks = [];
                         isRecording = true;
                         voiceButton.classList.add('recording');
                         statusText.textContent = 'Listening...';
                         appendToConsole('Started recording', 'info');
                     } else {
-                        // Stop recording
                         isRecording = false;
                         voiceButton.classList.remove('recording');
                         statusText.textContent = 'Processing...';
                         
-                        // Concatenate all chunks
                         const audioData = new Int16Array(
                             recordedChunks.reduce((acc, buffer) => acc + buffer.byteLength, 0)
                         );
@@ -338,7 +397,6 @@
                             offset += buffer.byteLength / 2;
                         });
                         
-                        // Send the PCM data
                         if (ws.readyState === WebSocket.OPEN) {
                             ws.send(audioData.buffer);
                             appendToConsole('Sent PCM audio data', 'sent');
