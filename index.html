@@ -484,6 +484,10 @@
                 if (!audioContext) {
                     audioContext = new (window.AudioContext || window.webkitAudioContext)();
                 }
+
+                const TARGET_SAMPLE_RATE = 24000;
+                const ORIGINAL_SAMPLE_RATE = audioContext.sampleRate;
+                const DOWNSAMPLE_FACTOR = Math.floor(ORIGINAL_SAMPLE_RATE / TARGET_SAMPLE_RATE);
                 
                 // Create a MediaStreamSource from the stream
                 const source = audioContext.createMediaStreamSource(stream);
@@ -495,17 +499,34 @@
                 processor.connect(audioContext.destination);
                 
                 let recordedChunks = [];
+                let sampleCounter = 0;
+                let accumulator = 0;
                 
                 processor.onaudioprocess = (e) => {
                     if (isRecording) {
                         // Get the raw audio data
                         const inputData = e.inputBuffer.getChannelData(0);
                         
-                        // Convert Float32Array to Int16Array (PCM 16-bit)
-                        const pcmData = new Int16Array(inputData.length);
+                        // Downsample to 24kHz by averaging samples
+                        const downsampledLength = Math.floor(inputData.length / DOWNSAMPLE_FACTOR);
+                        const downsampledData = new Float32Array(downsampledLength);
+                        
                         for (let i = 0; i < inputData.length; i++) {
+                            accumulator += inputData[i];
+                            sampleCounter++;
+                            
+                            if (sampleCounter === DOWNSAMPLE_FACTOR) {
+                                downsampledData[Math.floor(i / DOWNSAMPLE_FACTOR)] = accumulator / DOWNSAMPLE_FACTOR;
+                                accumulator = 0;
+                                sampleCounter = 0;
+                            }
+                        }
+                        
+                        // Convert Float32Array to Int16Array (PCM 16-bit)
+                        const pcmData = new Int16Array(downsampledData.length);
+                        for (let i = 0; i < downsampledData.length; i++) {
                             // Convert float to 16-bit signed integer
-                            const s = Math.max(-1, Math.min(1, inputData[i]));
+                            const s = Math.max(-1, Math.min(1, downsampledData[i]));
                             pcmData[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
                         }
                         
@@ -517,10 +538,12 @@
                     if (!isRecording) {
                         // Start recording
                         recordedChunks = [];
+                        sampleCounter = 0;
+                        accumulator = 0;
                         isRecording = true;
                         voiceButton.classList.add('recording');
                         statusText.textContent = 'Listening...';
-                        appendToConsole('Started recording', 'info');
+                        appendToConsole('Started recording at 24kHz mono', 'info');
                     } else {
                         // Stop recording
                         isRecording = false;
@@ -541,7 +564,7 @@
                         // Send the PCM data
                         if (ws.readyState === WebSocket.OPEN) {
                             ws.send(audioData.buffer);
-                            appendToConsole('Sent PCM audio data', 'sent');
+                            appendToConsole('Sent PCM audio data (24kHz, mono)', 'sent');
                         }
                         
                         recordedChunks = [];
@@ -549,7 +572,7 @@
                     }
                 });
 
-                appendToConsole('Audio recording setup complete', 'success');
+                appendToConsole('Audio recording setup complete (24kHz, mono)', 'success');
             } catch (err) {
                 console.error('Error accessing microphone:', err);
                 statusText.textContent = 'Microphone Error';
