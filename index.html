@@ -111,6 +111,27 @@
         .slider.round:before {
             border-radius: 50%;
         }
+
+        .start-session-button {
+            padding: 10px 20px;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.3s ease;
+            margin-right: 15px;
+        }
+
+        .start-session-button:hover {
+            background-color: #45a049;
+        }
+
+        .start-session-button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
     </style>
 </head>
 <body>
@@ -133,12 +154,20 @@
                 </div>
                 
                 <div class="controls-group">
+                    <button id="startSessionButton" class="start-session-button">
+                        Start Session
+                    </button>
+
                     <div class="response-indicator" id="responseIndicator">
                         <div class="wave"></div>
                         <div class="wave"></div>
                         <div class="wave"></div>
                     </div>
                     
+                    <button class="voice-button" id="voiceButton" style="display: none;">
+                        <div class="mic-icon"></div>
+                    </button>
+
                     <div class="environment-toggle">
                         <label class="switch">
                             <input type="checkbox" id="envToggle">
@@ -146,10 +175,6 @@
                         </label>
                         <span class="toggle-label">Production</span>
                     </div>
-
-                    <button class="voice-button" id="voiceButton">
-                        <div class="mic-icon"></div>
-                    </button>
 
                     <div class="camera-controls">
                         <select id="micSelect" class="device-select">
@@ -177,8 +202,6 @@
     </div>
 
     <script>
-        let ws;
-        let mediaRecorder;
         let audioChunks = [];
         let isRecording = false;
         let audioContext;
@@ -186,11 +209,12 @@
         let isPlaying = false;
         let lastPlayTime = 0;
         let currentAudioStream = null;
+        let currentSession = null;
+        let ws = null;
         const ORIGINAL_SAMPLE_RATE = 44100;
         const PLAYBACK_SAMPLE_RATE = 22050;
         const PLAYBACK_RATE = 0.5;
 
-        // Add environment configuration
         const envConfig = {
             dev: {
                 wsUrl: 'ws://localhost:8000/conversations/realtime',
@@ -201,10 +225,10 @@
                 apiUrl: 'http://localhost'
             }
         };
-        // Initialize currentEnv from localStorage or default to 'dev'
         let currentEnv = localStorage.getItem('currentEnv') || 'dev';
 
         const voiceButton = document.getElementById('voiceButton');
+        const startSessionButton = document.getElementById('startSessionButton');
         const statusElement = document.getElementById('status');
         const responseIndicator = document.getElementById('responseIndicator');
         const statusDot = document.querySelector('.status-dot');
@@ -217,26 +241,7 @@
         // Initialize toggle state from localStorage
         envToggle.checked = currentEnv === 'prod';
 
-        // Add camera functionality
-        const cameraFeed = document.getElementById('cameraFeed');
-        const cameraSelect = document.getElementById('cameraSelect');
-        const captureButton = document.getElementById('captureButton');
-        let currentStream = null;
-
-        // Add environment toggle handler
-        envToggle.addEventListener('change', () => {
-            currentEnv = envToggle.checked ? 'prod' : 'dev';
-            // Store the new environment in localStorage
-            localStorage.setItem('currentEnv', currentEnv);
-            appendToConsole(`Switching to ${currentEnv} environment`, 'info');
-            
-            // Reconnect WebSocket with new URL
-            if (ws) {
-                ws.close();
-            }
-            connect();
-        });
-
+        // Console logging functionality
         function appendToConsole(message, type = 'info') {
             const entry = document.createElement('div');
             entry.classList.add('console-entry', type);
@@ -262,21 +267,197 @@
             consoleElement.innerHTML = '';
         });
 
+        // Audio processing worklet code
+        const workletCode = `
+            class AudioProcessor extends AudioWorkletProcessor {
+                constructor() {
+                    super();
+                    this.isRecording = false;
+                    this.sampleCounter = 0;
+                    this.accumulator = 0;
+                    this.downsampleFactor = 2; // For 24kHz from 48kHz
+                }
+
+                process(inputs, outputs, parameters) {
+                    const input = inputs[0];
+                    if (!input || !input.length) return true;
+
+                    const inputChannel = input[0];
+                    if (this.isRecording) {
+                        // Downsample to 24kHz
+                        const downsampledData = new Float32Array(Math.floor(inputChannel.length / this.downsampleFactor));
+                        
+                        for (let i = 0; i < inputChannel.length; i++) {
+                            this.accumulator += inputChannel[i];
+                            this.sampleCounter++;
+                            
+                            if (this.sampleCounter === this.downsampleFactor) {
+                                downsampledData[Math.floor(i / this.downsampleFactor)] = 
+                                    this.accumulator / this.downsampleFactor;
+                                this.accumulator = 0;
+                                this.sampleCounter = 0;
+                            }
+                        }
+
+                        // Convert to PCM 16-bit and send to main thread
+                        const pcmData = new Int16Array(downsampledData.length);
+                        for (let i = 0; i < downsampledData.length; i++) {
+                            const s = Math.max(-1, Math.min(1, downsampledData[i]));
+                            pcmData[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+                        }
+
+                        this.port.postMessage(pcmData.buffer);
+                    }
+                    return true;
+                }
+            }
+
+            registerProcessor('audio-processor', AudioProcessor);
+        `;
+
+        async function setupAudioRecording() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    audio: {
+                        channelCount: 1, // Force mono
+                        sampleRate: 48000 // Request high sample rate for better downsampling
+                    } 
+                });
+                
+                // Create an AudioContext
+                if (!audioContext) {
+                    audioContext = new (window.AudioContext || window.webkitAudioContext)({
+                        sampleRate: 48000 // Force 48kHz for consistent downsampling
+                    });
+                }
+
+                // Create audio source
+                const source = audioContext.createMediaStreamSource(stream);
+                
+                // Create a ScriptProcessorNode for raw audio processing
+                const processor = audioContext.createScriptProcessor(4096, 1, 1);
+                
+                source.connect(processor);
+                processor.connect(audioContext.destination);
+                
+                let recordedChunks = [];
+                const TARGET_SAMPLE_RATE = 24000;
+                const DOWNSAMPLE_FACTOR = audioContext.sampleRate / TARGET_SAMPLE_RATE;
+                
+                let sampleCounter = 0;
+                let accumulator = 0;
+                
+                processor.onaudioprocess = (e) => {
+                    if (isRecording) {
+                        // Get mono channel data
+                        const inputData = e.inputBuffer.getChannelData(0);
+                        
+                        // Calculate downsampled buffer size
+                        const downsampledLength = Math.floor(inputData.length / DOWNSAMPLE_FACTOR);
+                        const downsampledData = new Float32Array(downsampledLength);
+                        
+                        // Downsample to exactly 24kHz
+                        for (let i = 0; i < downsampledLength; i++) {
+                            const inputIndex = Math.floor(i * DOWNSAMPLE_FACTOR);
+                            let sum = 0;
+                            let count = 0;
+                            
+                            // Average samples for better quality
+                            for (let j = 0; j < DOWNSAMPLE_FACTOR && (inputIndex + j) < inputData.length; j++) {
+                                sum += inputData[inputIndex + j];
+                                count++;
+                            }
+                            
+                            downsampledData[i] = sum / count;
+                        }
+                        
+                        // Convert to 16-bit PCM
+                        const pcmData = new Int16Array(downsampledData.length);
+                        for (let i = 0; i < downsampledData.length; i++) {
+                            // Ensure the sample is between -1 and 1
+                            const sample = Math.max(-1, Math.min(1, downsampledData[i]));
+                            // Convert to 16-bit PCM
+                            pcmData[i] = Math.round(sample * 32767);
+                        }
+                        
+                        recordedChunks.push(pcmData.buffer);
+                    }
+                };
+
+                voiceButton.addEventListener('click', () => {
+                    if (!isRecording) {
+                        // Start recording
+                        recordedChunks = [];
+                        isRecording = true;
+                        voiceButton.classList.add('recording');
+                        statusText.textContent = 'Listening...';
+                        appendToConsole('Started recording at 24kHz mono', 'info');
+                    } else {
+                        // Stop recording
+                        isRecording = false;
+                        voiceButton.classList.remove('recording');
+                        statusText.textContent = 'Processing...';
+                        
+                        // Calculate total length of all chunks
+                        const totalLength = recordedChunks.reduce((acc, buffer) => acc + buffer.byteLength, 0);
+                        const audioData = new Int16Array(totalLength / 2);
+                        let offset = 0;
+                        
+                        // Combine all chunks
+                        recordedChunks.forEach(buffer => {
+                            const view = new Int16Array(buffer);
+                            audioData.set(view, offset);
+                            offset += view.length;
+                        });
+                        
+                        // Send the PCM data
+                        if (ws && ws.readyState === WebSocket.OPEN) {
+                            ws.send(audioData.buffer);
+                            appendToConsole(`Sent PCM audio data (${audioData.length} samples at 24kHz mono)`, 'sent');
+                        }
+                        
+                        recordedChunks = [];
+                        appendToConsole('Stopped recording', 'info');
+                    }
+                });
+
+                appendToConsole('Audio recording setup complete (24kHz mono PCM16)', 'success');
+            } catch (err) {
+                console.error('Error accessing microphone:', err);
+                statusText.textContent = 'Microphone Error';
+                appendToConsole('Microphone Error: ' + err.message, 'error');
+            }
+        }
+
+        // Add camera functionality
+        const cameraFeed = document.getElementById('cameraFeed');
+        const cameraSelect = document.getElementById('cameraSelect');
+        const captureButton = document.getElementById('captureButton');
+        let currentStream = null;
+
         function connect() {
-            const wsUrl = envConfig[currentEnv].wsUrl;
+            if (!currentSession) {
+                appendToConsole('Cannot connect WebSocket: No active session', 'error');
+                return;
+            }
+
+            if (ws) {
+                ws.close();
+            }
+
+            const wsUrl = `${envConfig[currentEnv].wsUrl}/${currentSession.id}`;
             ws = new WebSocket(wsUrl);
 
             ws.onopen = () => {
                 statusDot.classList.add('connected');
-                statusText.textContent = 'Ready';
-                appendToConsole(`WebSocket connected to ${currentEnv} environment`, 'success');
+                statusText.textContent = 'Connected';
+                appendToConsole(`WebSocket connected to ${currentEnv} environment with session ${currentSession.id}`, 'success');
             };
 
             ws.onclose = () => {
                 statusDot.classList.remove('connected');
                 statusText.textContent = 'Disconnected';
                 appendToConsole('WebSocket disconnected', 'error');
-                setTimeout(connect, 1000);
             };
 
             ws.onerror = () => {
@@ -530,9 +711,14 @@
             }
         });
 
-        // Handle capture button
+        // Update the capture button event listener to include session ID
         captureButton.addEventListener('click', async () => {
             try {
+                if (!currentSession) {
+                    appendToConsole('No active session. Please start a session first.', 'error');
+                    return;
+                }
+
                 // Create a canvas element to capture the image
                 const canvas = document.createElement('canvas');
                 const context = canvas.getContext('2d');
@@ -559,8 +745,8 @@
                 const descriptionBox = document.getElementById('descriptionBox');
                 descriptionBox.textContent = 'Waiting for message description...';
                 
-                // Send the image to the server using the current environment's API URL
-                const response = await fetch(`${envConfig[currentEnv].apiUrl}/conversations/image/`, {
+                // Send the image to the server with session ID
+                const response = await fetch(`${envConfig[currentEnv].apiUrl}/conversations/image/${currentSession.id}`, {
                     method: 'POST',
                     body: formData
                 });
@@ -584,112 +770,6 @@
             }
         });
 
-
-        async function setupAudioRecording() {
-            try {
-                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                
-                // Create an AudioContext for processing
-                if (!audioContext) {
-                    audioContext = new (window.AudioContext || window.webkitAudioContext)();
-                }
-
-                const TARGET_SAMPLE_RATE = 24000;
-                const ORIGINAL_SAMPLE_RATE = audioContext.sampleRate;
-                const DOWNSAMPLE_FACTOR = Math.floor(ORIGINAL_SAMPLE_RATE / TARGET_SAMPLE_RATE);
-                
-                // Create a MediaStreamSource from the stream
-                const source = audioContext.createMediaStreamSource(stream);
-                
-                // Create a ScriptProcessorNode for raw audio processing
-                const processor = audioContext.createScriptProcessor(4096, 1, 1);
-                
-                source.connect(processor);
-                processor.connect(audioContext.destination);
-                
-                let recordedChunks = [];
-                let sampleCounter = 0;
-                let accumulator = 0;
-                
-                processor.onaudioprocess = (e) => {
-                    if (isRecording) {
-                        // Get the raw audio data
-                        const inputData = e.inputBuffer.getChannelData(0);
-                        
-                        // Downsample to 24kHz by averaging samples
-                        const downsampledLength = Math.floor(inputData.length / DOWNSAMPLE_FACTOR);
-                        const downsampledData = new Float32Array(downsampledLength);
-                        
-                        for (let i = 0; i < inputData.length; i++) {
-                            accumulator += inputData[i];
-                            sampleCounter++;
-                            
-                            if (sampleCounter === DOWNSAMPLE_FACTOR) {
-                                downsampledData[Math.floor(i / DOWNSAMPLE_FACTOR)] = accumulator / DOWNSAMPLE_FACTOR;
-                                accumulator = 0;
-                                sampleCounter = 0;
-                            }
-                        }
-                        
-                        // Convert Float32Array to Int16Array (PCM 16-bit)
-                        const pcmData = new Int16Array(downsampledData.length);
-                        for (let i = 0; i < downsampledData.length; i++) {
-                            // Convert float to 16-bit signed integer
-                            const s = Math.max(-1, Math.min(1, downsampledData[i]));
-                            pcmData[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-                        }
-                        
-                        recordedChunks.push(pcmData.buffer);
-                    }
-                };
-
-                voiceButton.addEventListener('click', () => {
-                    if (!isRecording) {
-                        // Start recording
-                        recordedChunks = [];
-                        sampleCounter = 0;
-                        accumulator = 0;
-                        isRecording = true;
-                        voiceButton.classList.add('recording');
-                        statusText.textContent = 'Listening...';
-                        appendToConsole('Started recording at 24kHz mono', 'info');
-                    } else {
-                        // Stop recording
-                        isRecording = false;
-                        voiceButton.classList.remove('recording');
-                        statusText.textContent = 'Processing...';
-                        
-                        // Concatenate all chunks
-                        const audioData = new Int16Array(
-                            recordedChunks.reduce((acc, buffer) => acc + buffer.byteLength, 0)
-                        );
-                        
-                        let offset = 0;
-                        recordedChunks.forEach(buffer => {
-                            audioData.set(new Int16Array(buffer), offset);
-                            offset += buffer.byteLength / 2;
-                        });
-                        
-                        // Send the PCM data
-                        if (ws.readyState === WebSocket.OPEN) {
-                            ws.send(audioData.buffer);
-                            appendToConsole('Sent PCM audio data (24kHz, mono)', 'sent');
-                        }
-                        
-                        recordedChunks = [];
-                        appendToConsole('Stopped recording', 'info');
-                    }
-                });
-
-                appendToConsole('Audio recording setup complete (24kHz, mono)', 'success');
-            } catch (err) {
-                console.error('Error accessing microphone:', err);
-                statusText.textContent = 'Microphone Error';
-                appendToConsole('Microphone Error: ' + err.message, 'error');
-            }
-        }
-
-
         // Initialize camera system
         async function initializeCamera() {
             try {
@@ -711,8 +791,62 @@
             appendToConsole('Fatal camera error: ' + error.message, 'error');
         });
 
+        // Update session start functionality to connect WebSocket after session creation
+        startSessionButton.addEventListener('click', async () => {
+            try {
+                startSessionButton.disabled = true;
+                startSessionButton.textContent = 'Starting session...';
+                
+                const response = await fetch(`${envConfig[currentEnv].apiUrl}/conversations/sessions/`, {
+                    method: 'POST'
+                });
+
+                if (!response.ok) {
+                    throw new Error(`Failed to start session: ${response.status}`);
+                }
+
+                const data = await response.json();
+                currentSession = data;
+                appendToConsole('Session started successfully', 'success');
+                appendToConsole(data, 'info');
+
+                // Update UI
+                startSessionButton.style.display = 'none';
+                voiceButton.style.display = 'block';
+                statusText.textContent = 'Connecting...';
+
+                // Initialize WebSocket connection with session
+                connect();
+
+            } catch (error) {
+                appendToConsole(`Error starting session: ${error.message}`, 'error');
+                startSessionButton.disabled = false;
+                startSessionButton.textContent = 'Start Session';
+            }
+        });
+
+        // Update environment toggle to handle WebSocket properly
+        envToggle.addEventListener('change', () => {
+            currentEnv = envToggle.checked ? 'prod' : 'dev';
+            // Close existing WebSocket if any
+            if (ws) {
+                ws.close();
+                ws = null;
+            }
+            // Reset session when changing environments
+            currentSession = null;
+            localStorage.setItem('currentEnv', currentEnv);
+            appendToConsole(`Switching to ${currentEnv} environment`, 'info');
+            
+            // Reset UI
+            startSessionButton.style.display = 'block';
+            startSessionButton.disabled = false;
+            startSessionButton.textContent = 'Start Session';
+            voiceButton.style.display = 'none';
+            statusText.textContent = 'Ready';
+        });
+
         // Initial setup
-        connect();
         setupAudioRecording();
     </script>
 </body>
